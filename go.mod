@@ -11,7 +11,7 @@ require (
 	github.com/lib/pq v1.10.7
 	github.com/sean-/postgresql-acl v0.0.0-20161225120419-d10489e5d217
 	github.com/stretchr/testify v1.7.0
-	gocloud.dev v0.25.0
+	gocloud.dev v0.29.0
 	golang.org/x/net v0.0.0-20220401154927-543a649e0bdd
 	golang.org/x/oauth2 v0.0.0-20220309155454-6242fa91716a
 )
