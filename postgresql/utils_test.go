@@ -26,7 +26,7 @@ func testCheckCompatibleVersion(t *testing.T, feature featureName) {
 		t.Fatalf("could connect to database: %v", err)
 	}
 	if !db.featureSupported(feature) {
-		t.Skip(fmt.Sprintf("Skip extension tests for Postgres %s", db.version))
+		t.Skipf(fmt.Sprintf("Skip extension tests for Postgres %s", db.version))
 	}
 }
 
@@ -64,7 +64,7 @@ func getTestConfig(t *testing.T) Config {
 
 func skipIfNotAcc(t *testing.T) {
 	if os.Getenv(resource.EnvTfAcc) == "" {
-		t.Skip(fmt.Sprintf(
+		t.Skipf(fmt.Sprintf(
 			"Acceptance tests skipped unless env '%s' set",
 			resource.EnvTfAcc))
 	}
