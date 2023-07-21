@@ -176,6 +176,7 @@ func Provider() *schema.Provider {
 			"postgresql_schema":                    resourcePostgreSQLSchema(),
 			"postgresql_role":                      resourcePostgreSQLRole(),
 			"postgresql_function":                  resourcePostgreSQLFunction(),
+			"postgresql_alter_role":                resourcePostgreSQLAlterRole(),
 			"postgresql_server":                    resourcePostgreSQLServer(),
 			"postgresql_user_mapping":              resourcePostgreSQLUserMapping(),
 			"postgresql_alter_role":                resourcePostgreSQLAlterRole(),
