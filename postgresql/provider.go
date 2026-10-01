@@ -5,6 +5,12 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+
 	"github.com/blang/semver"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
@@ -16,8 +22,11 @@ import (
 )
 
 const (
-	defaultProviderMaxOpenConnections = 20
-	defaultExpectedPostgreSQLVersion  = "9.0.0"
+	defaultProviderMaxOpenConnections            = 20
+	defaultProviderConnMaxLifetimeSeconds        = 0 // unlimited
+	defaultProviderMaxConnRetries                = 0
+	defaultProviderConnectionRetryTimeoutSeconds = 5
+	defaultExpectedPostgreSQLVersion             = "9.0.0"
 )
 
 // Provider returns a terraform.ResourceProvider.
@@ -49,7 +58,7 @@ func Provider() *schema.Provider {
 			"database": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "The name of the database to connect to in order to conenct to (defaults to `postgres`).",
+				Description: "The name of the database to connect to in order to connect to (defaults to `postgres`).",
 				DefaultFunc: schema.EnvDefaultFunc("PGDATABASE", "postgres"),
 			},
 			"username": {
@@ -87,7 +96,35 @@ func Provider() *schema.Provider {
 				Description: "AWS region to use for IAM auth",
 			},
 
-			// Conection username can be different than database username with user name mapas (e.g.: in Azure)
+			"aws_rds_iam_provider_role_arn": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Default:     "",
+				Description: "AWS IAM role to assume for IAM auth",
+			},
+
+			"azure_identity_auth": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Description: "Use MS Azure identity OAuth token " +
+					"(see: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/how-to-configure-sign-in-azure-ad-authentication)",
+			},
+
+			"azure_tenant_id": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Default:     "",
+				Description: "MS Azure tenant ID (see: https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/data-sources/client_config.html)",
+			},
+
+			"gcp_iam_impersonate_service_account": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Default:     "",
+				Description: "Service account to impersonate when using GCP IAM authentication.",
+			},
+
+			// Connection username can be different than database username with user name maps (e.g.: in Azure)
 			// See https://www.postgresql.org/docs/current/auth-username-maps.html
 			"database_username": {
 				Type:        schema.TypeString,
@@ -130,6 +167,11 @@ func Provider() *schema.Provider {
 							Description: "The SSL client certificate private key file path. The file must contain PEM encoded data.",
 							Required:    true,
 						},
+						"sslinline": {
+							Type:        schema.TypeBool,
+							Description: "Must be set to true if you are inlining the cert/key instead of using a file path.",
+							Optional:    true,
+						},
 					},
 				},
 				MaxItems: 1,
@@ -147,12 +189,33 @@ func Provider() *schema.Provider {
 				Description:  "Maximum wait for connection, in seconds. Zero or not specified means wait indefinitely.",
 				ValidateFunc: validation.IntAtLeast(-1),
 			},
+			"max_conn_retries": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				Default:      defaultProviderMaxConnRetries,
+				Description:  "Maximum number of connection retries. Zero means no retries.",
+				ValidateFunc: validation.IntAtLeast(0),
+			},
+			"connection_retry_timeout_seconds": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				Default:      defaultProviderConnectionRetryTimeoutSeconds,
+				Description:  "Maximum total wait, in seconds, across all connection retries.",
+				ValidateFunc: validation.IntAtLeast(0),
+			},
 			"max_connections": {
 				Type:         schema.TypeInt,
 				Optional:     true,
 				Default:      defaultProviderMaxOpenConnections,
 				Description:  "Maximum number of connections to establish to the database. Zero means unlimited.",
 				ValidateFunc: validation.IntAtLeast(-1),
+			},
+			"conn_max_lifetime_seconds": {
+				Type:         schema.TypeInt,
+				Optional:     true,
+				Default:      defaultProviderConnMaxLifetimeSeconds,
+				Description:  "Maximum lifetime of a connection, in seconds. Zero means unlimited.",
+				ValidateFunc: validation.IntAtLeast(0),
 			},
 			"expected_version": {
 				Type:         schema.TypeString,
@@ -179,6 +242,7 @@ func Provider() *schema.Provider {
 			"postgresql_alter_role":                resourcePostgreSQLAlterRole(),
 			"postgresql_server":                    resourcePostgreSQLServer(),
 			"postgresql_user_mapping":              resourcePostgreSQLUserMapping(),
+			"postgresql_security_label":            resourcePostgreSQLSecurityLabel(),
 		},
 
 		DataSourcesMap: map[string]*schema.Resource{
@@ -191,14 +255,14 @@ func Provider() *schema.Provider {
 	}
 }
 
-func validateExpectedVersion(v interface{}, key string) (warnings []string, errors []error) {
+func validateExpectedVersion(v any, key string) (warnings []string, errors []error) {
 	if _, err := semver.ParseTolerant(v.(string)); err != nil {
 		errors = append(errors, fmt.Errorf("invalid version (%q): %w", v.(string), err))
 	}
 	return
 }
 
-func getRDSAuthToken(region string, profile string, username string, host string, port int) (string, error) {
+func getRDSAuthToken(region string, profile string, role string, username string, host string, port int) (string, error) {
 	endpoint := fmt.Sprintf("%s:%d", host, port)
 
 	ctx := context.Background()
@@ -215,6 +279,32 @@ func getRDSAuthToken(region string, profile string, username string, host string
 	}
 	if err != nil {
 		return "", err
+	}
+
+	if role != "" {
+		stsClient := sts.NewFromConfig(awscfg)
+		roleInput := &sts.AssumeRoleInput{
+			RoleArn:         aws.String(role),
+			RoleSessionName: aws.String("TerraformPostgresqlProvider"),
+		}
+
+		roleOutput, err := stsClient.AssumeRole(ctx, roleInput)
+		if err != nil {
+			return "", fmt.Errorf("could not assume AWS role: %w", err)
+		}
+
+		awscfg, err = awsConfig.LoadDefaultConfig(ctx,
+			awsConfig.WithCredentialsProvider(
+				aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(
+					*roleOutput.Credentials.AccessKeyId,
+					*roleOutput.Credentials.SecretAccessKey,
+					*roleOutput.Credentials.SessionToken,
+				)),
+			),
+		)
+		if err != nil {
+			return "", fmt.Errorf("could not load AWS default config: %w", err)
+		}
 	}
 
 	token, err := auth.BuildAuthToken(ctx, endpoint, awscfg.Region, username, awscfg.Credentials)
@@ -236,7 +326,11 @@ func createGoogleCredsFileIfNeeded() error {
 	if err != nil {
 		return fmt.Errorf("could not create temporary file: %w", err)
 	}
-	defer tmpFile.Close()
+	defer func() {
+		if err := tmpFile.Close(); err != nil {
+			fmt.Printf("could not close temporary file: %v", err)
+		}
+	}()
 
 	_, err = tmpFile.WriteString(rawGoogleCredentials)
 	if err != nil {
@@ -246,7 +340,23 @@ func createGoogleCredsFileIfNeeded() error {
 	return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", tmpFile.Name())
 }
 
-func providerConfigure(d *schema.ResourceData) (interface{}, error) {
+func acquireAzureOauthToken(tenantId string) (string, error) {
+	credential, err := azidentity.NewDefaultAzureCredential(
+		&azidentity.DefaultAzureCredentialOptions{TenantID: tenantId})
+	if err != nil {
+		return "", err
+	}
+	token, err := credential.GetToken(context.Background(), policy.TokenRequestOptions{
+		Scopes:   []string{"https://ossrdbms-aad.database.windows.net/.default"},
+		TenantID: tenantId,
+	})
+	if err != nil {
+		return "", err
+	}
+	return token.Token, nil
+}
+
+func providerConfigure(d *schema.ResourceData) (any, error) {
 	var sslMode string
 	if sslModeRaw, ok := d.GetOk("sslmode"); ok {
 		sslMode = sslModeRaw.(string)
@@ -267,8 +377,19 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	if d.Get("aws_rds_iam_auth").(bool) {
 		profile := d.Get("aws_rds_iam_profile").(string)
 		region := d.Get("aws_rds_iam_region").(string)
+		role := d.Get("aws_rds_iam_provider_role_arn").(string)
 		var err error
-		password, err = getRDSAuthToken(region, profile, username, host, port)
+		password, err = getRDSAuthToken(region, profile, role, username, host, port)
+		if err != nil {
+			return nil, err
+		}
+	} else if d.Get("azure_identity_auth").(bool) {
+		tenantId := d.Get("azure_tenant_id").(string)
+		if tenantId == "" {
+			return nil, fmt.Errorf("postgresql: azure_identity_auth is enabled, azure_tenant_id must be provided also")
+		}
+		var err error
+		password, err = acquireAzureOauthToken(tenantId)
 		if err != nil {
 			return nil, err
 		}
@@ -277,26 +398,31 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	}
 
 	config := Config{
-		Scheme:            d.Get("scheme").(string),
-		Host:              host,
-		Port:              port,
-		Username:          username,
-		Password:          password,
-		DatabaseUsername:  d.Get("database_username").(string),
-		Superuser:         d.Get("superuser").(bool),
-		SSLMode:           sslMode,
-		ApplicationName:   "Terraform provider",
-		ConnectTimeoutSec: d.Get("connect_timeout").(int),
-		MaxConns:          d.Get("max_connections").(int),
-		ExpectedVersion:   version,
-		SSLRootCertPath:   d.Get("sslrootcert").(string),
+		Scheme:                          d.Get("scheme").(string),
+		Host:                            host,
+		Port:                            port,
+		Username:                        username,
+		Password:                        password,
+		DatabaseUsername:                d.Get("database_username").(string),
+		Superuser:                       d.Get("superuser").(bool),
+		SSLMode:                         sslMode,
+		ApplicationName:                 "Terraform provider",
+		ConnectTimeoutSec:               d.Get("connect_timeout").(int),
+		MaxConnRetries:                  d.Get("max_conn_retries").(int),
+		ConnectionRetryTimeoutSeconds:   d.Get("connection_retry_timeout_seconds").(int),
+		MaxConns:                        d.Get("max_connections").(int),
+		ConnMaxLifetimeSeconds:          d.Get("conn_max_lifetime_seconds").(int),
+		ExpectedVersion:                 version,
+		SSLRootCertPath:                 d.Get("sslrootcert").(string),
+		GCPIAMImpersonateServiceAccount: d.Get("gcp_iam_impersonate_service_account").(string),
 	}
 
 	if value, ok := d.GetOk("clientcert"); ok {
-		if spec, ok := value.([]interface{})[0].(map[string]interface{}); ok {
+		if spec, ok := value.([]any)[0].(map[string]interface{}); ok {
 			config.SSLClientCert = &ClientCertificateConfig{
 				CertificatePath: spec["cert"].(string),
 				KeyPath:         spec["key"].(string),
+				SSLInline:       spec["sslinline"].(bool),
 			}
 		}
 	}
