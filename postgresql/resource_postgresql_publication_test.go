@@ -31,7 +31,7 @@ func testAccCheckPostgresqlPublicationDestroy(s *terraform.State) error {
 		exists, err := checkPublicationExists(txn, getPublicationNameFromID(rs.Primary.ID))
 
 		if err != nil {
-			return fmt.Errorf("Error checking publication %s", err)
+			return fmt.Errorf("error checking publication %s", err)
 		}
 
 		if exists {
@@ -73,7 +73,7 @@ func testAccCheckPostgresqlPublicationExists(n string) resource.TestCheckFunc {
 		exists, err := checkPublicationExists(txn, pubName)
 
 		if err != nil {
-			return fmt.Errorf("Error checking publication %s", err)
+			return fmt.Errorf("error checking publication %s", err)
 		}
 
 		if !exists {
@@ -489,7 +489,7 @@ func checkPublicationExists(txn *sql.Tx, pubName string) (bool, error) {
 	case err == sql.ErrNoRows:
 		return false, nil
 	case err != nil:
-		return false, fmt.Errorf("Error reading info about publication: %s", err)
+		return false, fmt.Errorf("error reading info about publication: %s", err)
 	}
 
 	return true, nil
@@ -706,7 +706,7 @@ resource "postgresql_publication" "test" {
 					resource.TestCheckResourceAttr(
 						"postgresql_publication.test", pubDatabaseAttr, dbName),
 					resource.TestCheckResourceAttr(
-						"postgresql_publication.test", pubPublisViaPartitionRoothAttr, "false"),
+						"postgresql_publication.test", pubPublishViaPartitionRootAttr, "false"),
 				),
 			},
 			{
@@ -724,7 +724,7 @@ resource "postgresql_publication" "test" {
 					resource.TestCheckResourceAttr(
 						"postgresql_publication.test", fmt.Sprintf("%s.1", pubPublishAttr), "delete"),
 					resource.TestCheckResourceAttr(
-						"postgresql_publication.test", pubPublisViaPartitionRoothAttr, "true"),
+						"postgresql_publication.test", pubPublishViaPartitionRootAttr, "true"),
 				),
 			},
 		},
@@ -809,7 +809,7 @@ resource "postgresql_publication" "test" {
 			},
 			{
 				Config:      testAccPostgresqlPublicationWrongKeys,
-				ExpectError: regexp.MustCompile("could not update publication tables: Error getting publication paramters: invalid value of `publish_param`: wrong_param. Should be at least one of 'insert, update, delete, truncate'"),
+				ExpectError: regexp.MustCompile("could not update publication tables: error getting publication parameters: invalid value of `publish_param`: wrong_param. Should be at least one of 'insert, update, delete, truncate'"),
 			},
 			{
 				Config:      testAccPostgresqlPublicationDuplicateKeys,

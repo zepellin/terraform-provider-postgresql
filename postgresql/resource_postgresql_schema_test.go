@@ -56,7 +56,7 @@ func TestAccPostgresqlSchema_AddPolicy(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
-			// TODO: Need to check if remooving policy is buggy
+			// TODO: Need to check if removing policy is buggy
 			// because non-superuser fails to drop a role
 			testSuperuserPreCheck(t)
 		},
@@ -304,7 +304,7 @@ func testAccCheckPostgresqlSchemaDestroy(s *terraform.State) error {
 		exists, err := checkSchemaExists(txn, getExtensionNameFromID(rs.Primary.ID))
 
 		if err != nil {
-			return fmt.Errorf("Error checking schema %s", err)
+			return fmt.Errorf("error checking schema %s", err)
 		}
 
 		if exists {
@@ -346,7 +346,7 @@ func testAccCheckPostgresqlSchemaExists(n string, schemaName string) resource.Te
 		exists, err := checkSchemaExists(txn, schemaName)
 
 		if err != nil {
-			return fmt.Errorf("Error checking schema %s", err)
+			return fmt.Errorf("error checking schema %s", err)
 		}
 
 		if !exists {
