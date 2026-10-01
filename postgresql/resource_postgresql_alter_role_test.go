@@ -118,7 +118,7 @@ func checkAlterRole(t *testing.T, dsn, role string, parameterKey string, paramet
 		if err != nil {
 			t.Fatalf("could to create connection pool: %v", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		roleParameter := fmt.Sprintf("%s=%s", parameterKey, parameterValue)
 		var _rez int
